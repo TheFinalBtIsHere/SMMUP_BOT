@@ -15,7 +15,10 @@ export async function settleImapPendingPayment(
 ): Promise<{ newBalance: number }> {
   const memo = String(input.memo || "").trim().toUpperCase();
   if (!memo || !Number.isFinite(input.amount) || input.amount <= 0) throw new Error("RECEIPT_INVALID");
-  const settlementKey = `direct_upi:${input.pendingId.toString()}`;
+  const utr = typeof input.utr === "string" ? input.utr.trim() : "";
+  const transactionId = typeof input.transactionId === "string" ? input.transactionId.trim() : "";
+  const pendingIdKey = input.pendingId.toHexString();
+  const settlementKey = `direct_upi:${pendingIdKey}`;
   const session = client.startSession();
   let newBalance = 0;
   try {
@@ -31,10 +34,14 @@ export async function settleImapPendingPayment(
       }, { session });
       if (!current) throw new Error("PENDING_DEPOSIT_STALE");
 
+      // Shared deployments may retain legacy non-sparse unique indexes. A per-deposit sentinel
+      // keeps absent optional identifiers distinct instead of colliding on the indexed null value.
       await database.collection("processed_transactions").insertOne({
         memo,
-        ...(input.utr ? { utr: input.utr } : {}),
-        ...(input.transactionId ? { transaction_id: input.transactionId } : {}),
+        utr: utr || `__NO_RECEIPT_UTR__:${pendingIdKey}`,
+        transaction_id: transactionId || `__NO_RECEIPT_TXID__:${pendingIdKey}`,
+        ...(!utr ? { utr_missing: true } : {}),
+        ...(!transactionId ? { transaction_id_missing: true } : {}),
         amount: input.amount,
         pending_transaction_id: input.pendingId,
         user_id: input.userId,
@@ -50,8 +57,8 @@ export async function settleImapPendingPayment(
             status: "paid",
             direct_upi_settlement_key: settlementKey,
             paid_at: new Date(),
-            ...(input.utr ? { utr: input.utr } : {}),
-            ...(input.transactionId ? { transaction_id: input.transactionId } : {}),
+            ...(utr ? { utr } : {}),
+            ...(transactionId ? { transaction_id: transactionId } : {}),
             verified_amount: input.amount,
             settled_by: "railway_imap_worker",
           },

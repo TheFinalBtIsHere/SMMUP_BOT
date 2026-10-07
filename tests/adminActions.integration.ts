@@ -17,6 +17,44 @@ async function run() {
     await client.connect();
     const db = client.db("admin_actions_integration");
     await actions.ensureAdminControlIndexes(db);
+    const freshProcessedIndexes = await db.collection("processed_transactions").listIndexes().toArray();
+    for (const field of ["utr", "transaction_id", "memo"]) {
+      assert.ok(freshProcessedIndexes.some((index) => index.name === `processed_transactions_${field}_unique_sparse` && index.unique && index.sparse));
+    }
+
+    // Existing website/legacy databases may already have auto-named, non-sparse unique indexes.
+    const legacyDb = client.db("legacy_index_compatibility");
+    const legacyProcessed = legacyDb.collection("processed_transactions");
+    await Promise.all([
+      legacyProcessed.createIndex({ utr: 1 }, { unique: true }),
+      legacyProcessed.createIndex({ transaction_id: 1 }, { unique: true }),
+      legacyProcessed.createIndex({ memo: 1 }, { unique: true }),
+    ]);
+    await actions.ensureAdminControlIndexes(legacyDb);
+    const legacyIndexes = await legacyProcessed.listIndexes().toArray();
+    for (const field of ["utr", "transaction_id", "memo"]) {
+      assert.ok(legacyIndexes.some((index) => index.name === `${field}_1` && index.unique), `legacy ${field} unique index should be retained`);
+    }
+
+    const legacyUserId = new ObjectId();
+    await legacyDb.collection("users").insertOne({ _id: legacyUserId, email: "legacy@example.com", balance: 0 });
+    for (const memo of ["SUPNOID1", "SUPNOID2"]) {
+      const pendingId = new ObjectId();
+      await legacyDb.collection("transactions").insertOne({
+        _id: pendingId, user_id: legacyUserId, user_email: "legacy@example.com",
+        method: "FAMPAY_UPI", amount: 10, memo, status: "pending",
+        expires_at: new Date(Date.now() + 60_000),
+      });
+      await actions.settleImapPendingPayment(legacyDb, client, {
+        pendingId, userId: legacyUserId, userEmail: "legacy@example.com", memo, amount: 10,
+      });
+    }
+    const legacySettlements = await legacyProcessed.find({ source: "railway_imap_worker", utr_missing: true, transaction_id_missing: true }).toArray();
+    assert.equal(legacySettlements.length, 2, "multiple no-identifier receipts must coexist with legacy non-sparse indexes");
+    assert.notEqual(legacySettlements[0].utr, legacySettlements[1].utr);
+    assert.notEqual(legacySettlements[0].transaction_id, legacySettlements[1].transaction_id);
+    assert.equal((await legacyDb.collection("users").findOne({ _id: legacyUserId }))?.balance, 20);
+
     const userId = new ObjectId();
     const keyId = new ObjectId();
     const orderId = new ObjectId();

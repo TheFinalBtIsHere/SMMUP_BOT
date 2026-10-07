@@ -25,6 +25,7 @@ Recommended Railway service settings:
 
 - Build command: automatic (`npm ci` through Nixpacks)
 - Start command: `npm start`
+- Keep `tsx` in `dependencies` (not only `devDependencies`) and commit the matching lockfile: `npm start` executes `tsx bot.ts`, and production installs may omit development dependencies.
 - Restart policy: on failure, maximum 10 retries
 - Health domain: none required; monitor process logs plus the `system_health` MongoDB records
 
@@ -210,7 +211,7 @@ The worker code uses ImapFlow defaults for host/security and the listed mailbox 
 ## Railway deployment
 
 1. Create a Railway project from the repository.
-2. Set the service root directory to `admin-bot` (without assuming a leading slash in every Railway UI).
+2. Set the service root directory to the repository root (`.`). `package.json`, `package-lock.json` and `railway.json` are at this repository's root; do not set the root to `admin-bot`.
 3. Set the start command to `npm start` if not detected from `package.json`.
 4. Add environment values through Railway secrets.
 5. Use a separate staging bot token/owner/database/mailbox before production.
@@ -231,7 +232,6 @@ Do not configure a Telegram webhook for this bot token. Webhook-secret validatio
 Do not use production secrets or production users for local destructive tests.
 
 ```bash
-cd admin-bot
 npm ci
 npx tsc --noEmit
 npm run test:admin-actions
@@ -255,6 +255,8 @@ The integration suite uses an ephemeral MongoDB replica set and exercises concur
 - Permission to create the required indexes.
 - Unique constraints for admin callback hashes, Direct UPI memo/identifier/settlement keys and wallet settlement keys.
 - TTL behavior for short-lived action/support/recovery records.
+
+For `processed_transactions`, startup reuses an existing unique single-field identifier index (including legacy non-sparse indexes) instead of requesting a conflicting auto-named sparse index. If no equivalent index exists, it creates an explicitly named sparse unique index. The worker records a per-deposit internal sentinel for absent optional UTR/transaction IDs so legacy non-sparse indexes do not collide on missing values; these sentinels are not treated as receipt identifiers. Do not drop an existing unique index to force startup.
 
 Startup/index failures are release-blocking. Do not remove uniqueness merely to make a deployment start.
 

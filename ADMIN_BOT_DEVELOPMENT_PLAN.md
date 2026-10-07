@@ -540,7 +540,7 @@ One MongoDB transaction:
 6. inserts unique wallet ledger entry;
 7. inserts security event.
 
-Unique indexes on memo, optional UTR/TxID, Direct UPI settlement key and wallet settlement key enforce replay safety. Duplicate-key and stale-state races do not produce a second credit. For legacy receipts where FamApp removed SUP before unique-paise reservation existed, `/settleupi` stages exact memo, amount, UTR and TxID with a mandatory reason, then re-reads current state and commits the processed claim, pending transition, wallet credit, ledger, security event and audit together after owner inline confirmation.
+Unique indexes on memo, optional UTR/TxID, Direct UPI settlement key and wallet settlement key enforce replay safety. Duplicate-key and stale-state races do not produce a second credit. Where a shared database already has an equivalent unique single-field identifier index, startup reuses it rather than requesting a conflicting auto-named sparse index; otherwise it creates an explicitly named sparse index. Because legacy non-sparse indexes treat an absent identifier as `null`, the worker writes a per-pending-deposit internal sentinel for a missing optional UTR/TxID. Sentinels cannot match the parser's valid receipt-ID formats and are not treated as payment evidence. For legacy receipts where FamApp removed SUP before unique-paise reservation existed, `/settleupi` stages exact memo, amount, UTR and TxID with a mandatory reason, then re-reads current state and commits the processed claim, pending transition, wallet credit, ledger, security event and audit together after owner inline confirmation.
 
 ### Reconciliation
 
@@ -592,7 +592,7 @@ Bot startup awaits index creation for:
 - admin audit time/subject lookups;
 - notes/events user/time lookups;
 - one open reconciliation per memo/reason;
-- unique sparse processed UTR, transaction ID and memo;
+- unique processed UTR, transaction ID and memo indexes: reuse an existing unique, single-field index when present (including non-sparse legacy indexes), otherwise create explicitly named sparse unique indexes;
 - unique sparse transaction memo;
 - unique Direct UPI settlement key;
 - unique wallet settlement key.
@@ -626,7 +626,6 @@ Current source still has legacy direct error/list interpolation paths. Before pr
 ### Automated local suite
 
 ```bash
-cd admin-bot
 npm ci
 npx tsc --noEmit
 npm run test:admin-actions
@@ -662,6 +661,8 @@ Local tests do not prove these provider/runtime behaviors.
 ---
 
 ## 19. Deployment and rollback
+
+This is a standalone repository: `package.json`, `package-lock.json` and `railway.json` are at the repository root. Set the Railway service root to `.` (the repository root), use the Nixpacks `npm ci` build and start with `npm start`. Because `npm start` invokes `tsx bot.ts`, `tsx` must remain in `dependencies` and in the root lockfile; production installs may omit `devDependencies`.
 
 ### Deployment owner checklist
 
