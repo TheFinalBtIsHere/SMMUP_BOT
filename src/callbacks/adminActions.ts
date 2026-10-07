@@ -17,7 +17,9 @@ export function registerAdminActionCallbacks(bot: Telegraf<any>) {
         { $set: { status: "cancelled", cancelled_at: new Date() } },
       );
       await ctx.answerCbQuery(result.modifiedCount ? "Action cancelled." : "Action already expired or consumed.");
-      await ctx.editMessageText(result.modifiedCount ? "Cancelled. No change was made." : "This action is no longer available.");
+      await ctx.editMessageText(result.modifiedCount ? "Cancelled. No change was made." : "This action is no longer available.", {
+        reply_markup: { inline_keyboard: [[{ text: "🏠 Dashboard", callback_data: "d:home" }]] },
+      });
     } catch (error: any) {
       await ctx.answerCbQuery(`Cancel failed: ${String(error.message).slice(0, 100)}`, { show_alert: true });
     }
@@ -51,7 +53,10 @@ export function registerAdminActionCallbacks(bot: Telegraf<any>) {
         );
       });
       await ctx.answerCbQuery("Action completed.");
-      await ctx.editMessageText(resultText, { parse_mode: "HTML" });
+      await ctx.editMessageText(resultText, {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [[{ text: "🏠 Dashboard", callback_data: "d:home" }]] },
+      });
     } catch (error: any) {
       const messages: Record<string, string> = {
         ACTION_EXPIRED_OR_USED: "This confirmation expired or was already used.",

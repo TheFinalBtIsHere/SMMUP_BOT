@@ -15,9 +15,12 @@ export function reviewModerationText(review: any, status: "approved" | "hidden")
 
 export function reviewModerationKeyboard(id: ObjectId, status: "approved" | "hidden") {
   return {
-    inline_keyboard: [[{
-      text: status === "hidden" ? "👁 Show review" : "🙈 Hide review",
-      callback_data: `review-toggle:${id.toString()}`,
-    }]],
+    inline_keyboard: [
+      [{
+        text: status === "hidden" ? "👁 Show review" : "🙈 Hide review",
+        callback_data: `review-toggle:${id.toString()}`,
+      }],
+      [{ text: "🏠 Dashboard", callback_data: "d:home" }],
+    ],
   };
 }

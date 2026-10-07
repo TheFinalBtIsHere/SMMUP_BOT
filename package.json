@@ -8,8 +8,9 @@
     "start": "tsx bot.ts",
     "dev": "tsx watch bot.ts",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run test:admin-actions",
-    "test:admin-actions": "tsx tests/adminActions.integration.ts"
+    "test": "npm run typecheck && npm run test:admin-actions && npm run test:dashboard",
+    "test:admin-actions": "tsx tests/adminActions.integration.ts",
+    "test:dashboard": "tsx tests/dashboardUi.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

@@ -44,17 +44,23 @@ export function registerUserCommands(bot: Telegraf<any>) {
         reply_markup: {
           inline_keyboard: [
             [
-              { text: "🖥 Sessions", callback_data: `user-sessions:${user._id.toString()}` },
-              { text: "👁 Support Access", callback_data: `user-support:${user._id.toString()}` },
+              { text: "🖥 Sessions", callback_data: `d:sessions:${user._id.toString()}:0` },
+              { text: user.account_locked ? "Support Access unavailable while locked" : "👁 Support Access", callback_data: user.account_locked ? "d:noop" : `d:support:${user._id.toString()}` },
             ],
             [
-              { text: "🛡 Account Controls", callback_data: `user-controls:${user._id.toString()}` },
-              { text: "🔑 API Keys", callback_data: `user-keys:${user._id.toString()}` },
+              { text: "🛡 Account Controls", callback_data: `d:controls:${user._id.toString()}` },
+              { text: "🔑 API Keys", callback_data: `d:keys:${user._id.toString()}:0` },
             ],
             [
-              { text: "📒 Records", callback_data: `user-records:${user._id.toString()}` },
-              { text: "🚫 Revoke All Sessions", callback_data: `sessions-revoke-prompt:${user._id.toString()}` },
+              { text: "📦 Orders", callback_data: `d:records:orders:${user._id.toString()}:0` },
+              { text: "💳 Transactions", callback_data: `d:records:deposits:${user._id.toString()}:0` },
             ],
+            [
+              { text: "📒 Wallet", callback_data: `d:records:wallet:${user._id.toString()}:0` },
+              { text: "🛡 Events", callback_data: `d:records:events:${user._id.toString()}:0` },
+            ],
+            [{ text: "🚫 Revoke All Sessions", callback_data: `sessions-revoke-prompt:${user._id.toString()}` }],
+            [{ text: "🏠 Dashboard", callback_data: "d:home" }],
           ],
         },
       });
@@ -205,17 +211,22 @@ export function registerUserCommands(bot: Telegraf<any>) {
     await ctx.answerCbQuery("Confirm session revocation.");
     await ctx.reply("⚠️ Revoke this website session now?", {
       reply_markup: {
-        inline_keyboard: [[
-          { text: "✅ Revoke", callback_data: `session-revoke-confirm:${ctx.match[1]}` },
-          { text: "Cancel", callback_data: "session-revoke-cancel" },
-        ]],
+        inline_keyboard: [
+          [
+            { text: "✅ Revoke", callback_data: `session-revoke-confirm:${ctx.match[1]}` },
+            { text: "Cancel", callback_data: "session-revoke-cancel" },
+          ],
+          [{ text: "🏠 Dashboard", callback_data: "d:home" }],
+        ],
       },
     });
   });
 
   bot.action("session-revoke-cancel", async (ctx) => {
     await ctx.answerCbQuery("Cancelled.");
-    await ctx.editMessageText("Revocation cancelled.");
+    await ctx.editMessageText("Revocation cancelled.", {
+      reply_markup: { inline_keyboard: [[{ text: "🏠 Dashboard", callback_data: "d:home" }]] },
+    });
   });
 
   bot.action(/^session-revoke-confirm:([a-f0-9]{24})$/, async (ctx) => {
@@ -249,7 +260,9 @@ export function registerUserCommands(bot: Telegraf<any>) {
         created_at: now,
       });
       await ctx.answerCbQuery(result.modifiedCount ? "Session revoked." : "Session was already inactive.");
-      await ctx.editMessageText(result.modifiedCount ? "✅ Website session revoked." : "ℹ️ Session was already inactive.");
+      await ctx.editMessageText(result.modifiedCount ? "✅ Website session revoked." : "ℹ️ Session was already inactive.", {
+        reply_markup: { inline_keyboard: [[{ text: "🏠 Dashboard", callback_data: "d:home" }]] },
+      });
     } catch (error: any) {
       await ctx.answerCbQuery(`Failed: ${String(error.message).slice(0, 120)}`, { show_alert: true });
     }
@@ -259,10 +272,13 @@ export function registerUserCommands(bot: Telegraf<any>) {
     await ctx.answerCbQuery("Confirm global session revocation.");
     await ctx.reply("⚠️ Revoke every normal, recovery and Support Access session connected to this account?", {
       reply_markup: {
-        inline_keyboard: [[
-          { text: "✅ Revoke all", callback_data: `sessions-revoke-confirm:${ctx.match[1]}` },
-          { text: "Cancel", callback_data: "session-revoke-cancel" },
-        ]],
+        inline_keyboard: [
+          [
+            { text: "✅ Revoke all", callback_data: `sessions-revoke-confirm:${ctx.match[1]}` },
+            { text: "Cancel", callback_data: "session-revoke-cancel" },
+          ],
+          [{ text: "🏠 Dashboard", callback_data: "d:home" }],
+        ],
       },
     });
   });
@@ -327,7 +343,9 @@ export function registerUserCommands(bot: Telegraf<any>) {
         await mongoSession.endSession();
       }
       await ctx.answerCbQuery(`${revokedCount} session${revokedCount === 1 ? "" : "s"} revoked.`);
-      await ctx.editMessageText(`✅ Revoked ${revokedCount} active website session${revokedCount === 1 ? "" : "s"}.`);
+      await ctx.editMessageText(`✅ Revoked ${revokedCount} active website session${revokedCount === 1 ? "" : "s"}.`, {
+        reply_markup: { inline_keyboard: [[{ text: "🏠 Dashboard", callback_data: "d:home" }]] },
+      });
     } catch (error: any) {
       await ctx.answerCbQuery(`Failed: ${String(error.message).slice(0, 120)}`, { show_alert: true });
     }

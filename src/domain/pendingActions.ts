@@ -31,18 +31,29 @@ export async function queueAdminAction(ctx: any, type: string, payload: Record<s
     consumed_at: null,
     cancelled_at: null,
   });
-  await ctx.reply(
-    `${summary}\n\n⏳ Confirm by <code>${expiresAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST</code>.\n<i>The action is rebuilt from current database state when confirmed.</i>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "✅ Confirm", callback_data: `adm-ok:${raw}` },
-          { text: "Cancel", callback_data: `adm-no:${raw}` },
-        ]],
+  try {
+    await ctx.reply(
+      `${summary}\n\n⏳ Confirm by <code>${expiresAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST</code>.\n<i>The action is rebuilt from current database state when confirmed.</i>`,
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ Confirm", callback_data: `adm-ok:${raw}` },
+              { text: "Cancel", callback_data: `adm-no:${raw}` },
+            ],
+            [{ text: "🏠 Dashboard", callback_data: "d:home" }],
+          ],
+        },
       },
-    },
-  );
+    );
+  } catch (error) {
+    await database.collection("admin_pending_actions").updateOne(
+      { token_hash: hashActionToken(raw), status: "pending" },
+      { $set: { status: "delivery_failed", cancelled_at: new Date(), delivery_error_class: (error as any)?.name || "Error" } },
+    ).catch(() => {});
+    throw error;
+  }
 }
 
 export function parseReasonedCommand(text: string, command: string) {

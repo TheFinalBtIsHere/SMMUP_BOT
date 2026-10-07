@@ -112,7 +112,7 @@ export function createPaymentWorkerRuntime(
     if (OWNER_ID && (failures === 3 || failures % 10 === 0)) {
       await bot.telegram.sendMessage(
         OWNER_ID,
-        `🚨 <b>IMAP settlement worker unhealthy</b>\nConsecutive failures: <b>${failures}</b>\nError: <code>${escapeHtml(String(detail || "unknown").slice(0, 300))}</code>`,
+        `🚨 <b>IMAP settlement worker unhealthy</b>\nConsecutive failures: <b>${failures}</b>\nError: <code>details omitted; check Railway logs</code>`,
         { parse_mode: "HTML" },
       ).catch(console.error);
     }
@@ -147,25 +147,40 @@ export function createPaymentWorkerRuntime(
   }
 
 
-  // /scan (Manual trigger for IMAP scan)
-  bot.command("scan", async (ctx) => {
-    if (workerActive) return ctx.reply("ℹ️ A settlement scan is already active on this instance.");
+  async function runManualScan(ctx: any) {
+    const dashboardKeyboard = { inline_keyboard: [[
+      { text: "⚙️ Worker health", callback_data: "d:workers" },
+      { text: "🏠 Dashboard", callback_data: "d:home" },
+    ]] };
+    if (workerActive) return ctx.reply("ℹ️ A settlement scan is already active on this instance.", { reply_markup: dashboardKeyboard });
     workerActive = true;
-    await ctx.reply("📡 Running manual IMAP settlement scan...");
     try {
+      await ctx.reply("📡 Running manual IMAP settlement scan...");
       const database = await getDatabase();
-      if (!await acquireWorkerLease(database)) return ctx.reply("ℹ️ Another Railway instance currently owns the settlement lease.");
+      if (!await acquireWorkerLease(database)) {
+        return ctx.reply("ℹ️ Another Railway instance currently owns the settlement lease.", { reply_markup: dashboardKeyboard });
+      }
       const result = await scanAndSettlePayments();
       await reconcilePaymentOperations(database);
       await recordWorkerHealth(database, true);
-      await ctx.reply(result);
+      await ctx.reply(result, { reply_markup: dashboardKeyboard });
     } catch (err: any) {
       const database = await getDatabase().catch(() => null);
       if (database) await recordWorkerHealth(database, false, err.message).catch(() => {});
-      await ctx.reply(`❌ IMAP scan failed: ${err.message}`);
+      console.error("[Worker Error] Manual IMAP scan failed:", err?.name || "Error");
+      await ctx.reply("❌ IMAP scan failed. Internal details were withheld; check worker health and Railway logs.", {
+        reply_markup: dashboardKeyboard,
+      });
     } finally {
       workerActive = false;
     }
+  }
+
+  // Command and dashboard button share the same guarded manual-scan path.
+  bot.command("scan", runManualScan);
+  bot.action("worker:scan", async (ctx) => {
+    await ctx.answerCbQuery("Manual scan requested.").catch(() => {});
+    await runManualScan(ctx);
   });
 
   return { startBackgroundWorker };

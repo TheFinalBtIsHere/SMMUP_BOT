@@ -5,7 +5,7 @@
 > **Repository scope:** bot and worker code only
 > **Production validation:** required after the first Railway deployment
 
-This private owner service provides SMM UP’s administrative control plane and Direct UPI email-settlement worker. There is no website admin panel.
+This owner-restricted service provides SMM UP’s administrative control plane and Direct UPI email-settlement worker. There is no website admin panel.
 
 For the full implemented-state specification, see [`ADMIN_BOT_DEVELOPMENT_PLAN.md`](ADMIN_BOT_DEVELOPMENT_PLAN.md). This repository is the standalone Railway service; keep all real credentials in Railway Variables, never in files.
 
@@ -13,7 +13,7 @@ For the full implemented-state specification, see [`ADMIN_BOT_DEVELOPMENT_PLAN.m
 
 ## Deploy on Railway
 
-1. Keep the GitHub repository private and deploy this repository as one Railway service with the repository root as the service root.
+1. Deploy the public bot repository as one Railway service with the repository root as the service root; never commit credentials or real `.env` values.
 2. Railway uses `railway.json` and runs `npm start`; do not configure a webhook or a public domain because the bot uses Telegram long polling.
 3. Copy every applicable variable name from `.env.example` into Railway **Variables**. Never commit a real `.env`, Telegram token, MongoDB URI, Gmail address/app password or state secret.
 4. Use the same production MongoDB database as the website so bot actions, payment records, wallet ledger and sessions remain consistent.
@@ -43,22 +43,26 @@ Recommended Railway service settings:
 | `src/db/indexes.ts` | Administrative, payment and idempotency index gate |
 | `src/security/` | Telegram HTML escaping, action-token hashing, protected action-state encryption and temporary-password generation |
 | `src/domain/pendingActions.ts` | Reason parsing and five-minute actor-bound confirmation staging |
+| `src/domain/recoveryActions.ts` | Shared protected custom-password reset preparation and Support Access issuance |
 | `src/domain/adminActions.ts` | Confirmed transactional wallet, refund, account, hold and API-key mutations plus audit writes |
 | `src/middleware/ownerAuthorization.ts` | Numeric owner authorization for every command and callback |
 | `src/callbacks/adminActions.ts` | Generic Confirm/Cancel callback claim and transaction orchestration |
-| `src/commands/general.ts` | Help/menu, statistics, recent orders and review moderation |
+| `src/commands/dashboard.ts` | Owner-only button dashboard, pagination, search/action wizards and cross-section navigation |
+| `src/commands/general.ts` | Statistics and review moderation commands |
 | `src/commands/users.ts` | User detail, records, sessions and account/key control staging |
 | `src/commands/recovery.ts` | Temporary-password and one-time Support Access workflows |
 | `src/commands/operations.ts` | Wallet, refund, order/deposit and memo operations |
 | `src/ui/reviews.ts` | Review moderation rendering and inline keyboard construction |
+| `src/ui/adminDashboard.ts` | Callback-safe dashboard keyboard, Back/Home/Refresh, pagination and wizard controls |
 | `src/worker/settlement.ts` | Exactly-once Direct UPI settlement transaction |
 | `src/worker/paymentScanner.ts` | Bounded IMAP fetch/parsing, exact pending-match checks and settlement invocation |
 | `src/worker/paymentRuntime.ts` | `/scan`, process guard, distributed lease, reconciliation, health and 20-second scheduler |
 | `src/worker/recoveryStatus.ts` | Temporary-password and Support Access Telegram status synchronization |
 | `src/worker/runtime.ts` | Worker composition only; exposes the two scheduler start functions to `bot.ts` |
 | `tests/adminActions.integration.ts` | Replica-set transaction, replay, rollback and concurrent-settlement coverage |
+| `tests/dashboardUi.ts` | Dashboard navigation, refresh/pagination and Telegram keyboard-size contract checks |
 
-Handler registration remains deliberate: owner middleware, generic administrative callbacks, general commands, user controls, recovery, operational commands, then the worker-owned `/scan` command. Preserve this order during future changes unless a reviewed behavior change requires otherwise.
+Handler registration remains deliberate: owner middleware, dashboard routes/wizard middleware, generic administrative callbacks, general commands, user controls, recovery, operational commands, then the worker-owned `/scan` command. Preserve this order during future changes unless a reviewed behavior change requires otherwise.
 
 ---
 
@@ -83,7 +87,13 @@ The bot is a high-value surface. Protect the owner’s Telegram account with two
 
 ## Implemented command reference
 
-Use `/start` or `/help` for the inline entry menu. The menu currently routes to command guidance and user-profile controls; not every operation is a fully navigable dashboard screen.
+Use `/start`, `/help` or `/menu` to open the owner-only inline dashboard. It includes paginated Overview, Users, Orders, Payments, Security, Reviews and Worker sections; search and guided workflows expose the implemented operations without removing any commands. `/cancel` discards the current short-lived input wizard. Sensitive changes still require a reason and the existing separate Confirm/Cancel action.
+
+### Button dashboard
+
+The dashboard uses Telegram inline keyboards for navigation, refresh, pagination and action selection. Data screens provide a parent Back path and a Dashboard path; dynamic screens include Refresh. Action prompts expose Cancel and Dashboard controls. It covers live overview, recent users and email search, user profiles/records/sessions/keys/controls/recovery, recent and failed orders with refund staging, pending/recent transactions, memo lookup, manual Direct UPI reconciliation, open payment issues, reviews, worker health and manual scan. Commands remain available as an alternative and are listed in the Telegram command menu.
+
+Dynamic values (email, amount, reason, receipt IDs and optional custom temporary password) are entered through short-lived guided prompts; buttons cannot safely encode arbitrary values. Wizard state is process-memory only, expires after 10 minutes, is bounded, and can be cancelled with its button or `/cancel`. Sensitive mutations still use the established hash-only, actor-bound confirmation workflow. Custom password input is encrypted before it is retained in wizard state and the incoming message is deleted when Telegram permits.
 
 ### Read and inspect
 
@@ -150,6 +160,7 @@ First inspect the user with `/user <email>` and open **API Keys** to obtain the 
 
 Temporary-password behavior:
 
+- button and command inputs are removed from chat when Telegram permits; owner-selected values are protected before being retained for confirmation;
 - confirm within five minutes;
 - default lifetime 180 minutes;
 - default maximum uses 2; configuration allows only 1 or 2;
@@ -218,10 +229,11 @@ The worker code uses ImapFlow defaults for host/security and the listed mailbox 
 6. Deploy one intended service with `ENABLE_IMAP_WORKER=true`.
 7. Confirm the startup log identifies the expected bot username and long polling.
 8. Confirm critical indexes create successfully.
-9. Send `/start` from the owner account.
-10. Send a command from a non-owner test account and confirm rejection.
-11. Confirm `system_health` heartbeat and `worker_leases` state.
-12. Run the staging matrix in the security runbook.
+9. Send `/start` from the owner account; exercise each dashboard section, Back/Home/Refresh, pagination and `/cancel` in non-production data.
+10. Try one read-only and one button-launched staged workflow; confirm dynamic text input is collected and no sensitive action commits without its expected confirmation.
+11. Send a command/callback from a non-owner test account and confirm rejection.
+12. Confirm `system_health` heartbeat and `worker_leases` state.
+13. Run the staging matrix in the security runbook.
 
 Do not configure a Telegram webhook for this bot token. Webhook-secret validation is not applicable to this long-polling transport.
 
@@ -233,8 +245,7 @@ Do not use production secrets or production users for local destructive tests.
 
 ```bash
 npm ci
-npx tsc --noEmit
-npm run test:admin-actions
+npm test
 npm audit --omit=dev
 ```
 
@@ -244,7 +255,7 @@ To start manually with a controlled environment:
 npm start
 ```
 
-The integration suite uses an ephemeral MongoDB replica set and exercises concurrent wallet/refund/key/control and worker-settlement behavior. It does not prove Telegram, Railway, mailbox or provider production readiness.
+The administrative-action integration suite uses an ephemeral MongoDB replica set and exercises concurrent wallet/refund/key/control and worker-settlement behavior. The dashboard keyboard test checks navigation/refresh/pagination helpers and Telegram callback/button size bounds. Neither suite proves Telegram, Railway, mailbox or provider production readiness.
 
 ---
 

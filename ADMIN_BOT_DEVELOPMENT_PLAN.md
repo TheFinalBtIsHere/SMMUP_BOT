@@ -1,9 +1,9 @@
 # SMM UP Admin Bot — Implemented-State Specification and Evolution Plan
 
-> **Reconciled against:** `bot.ts`, `src/**/*.ts` and `tests/adminActions.integration.ts`
-> **Pushed implementation:** `2c60e657c5759f7a22cf9fbb872e1d1e051e7201`
-> **Source organization:** the behavior-preserving modular TypeScript refactor is pushed on `improvement/private-repo-and-bot-modules`; Railway deployment is not yet proven
-> **Updated:** 2026-10-06
+> **Reconciled against:** `bot.ts`, `src/**/*.ts`, `tests/adminActions.integration.ts` and `tests/dashboardUi.ts`
+> **Baseline before button-dashboard work:** `134bbcc5f19d535b8217549df641a0d831f23422` on `origin/master`
+> **Earlier module-split reference:** `2c60e657c5759f7a22cf9fbb872e1d1e051e7201` on `improvement/private-repo-and-bot-modules`; Railway deployment is not yet proven
+> **Updated:** 2026-10-07
 > **Runtime decision:** Railway long-polling bot plus IMAP worker
 > **Administration decision:** no website admin panel
 
@@ -46,7 +46,9 @@ It is not:
 - Numeric owner middleware on every update.
 - Long polling with messages/callback queries only.
 - Startup bot-identity lookup and pending-update drop.
-- Inline top-level menu and inline user-detail actions.
+- Paginated owner-only inline dashboard with Back/Home/Refresh navigation, per-chat text-entry wizards, and inline user-detail actions; all slash commands remain available.
+- Telegram's bot command menu is synchronized at startup with the dashboard and existing commands.
+- Callback keyboard helpers enforce Telegram's 64-byte callback-data and 64-character button-label limits.
 - Five-minute hash-only generic mutation confirmations.
 - Transactional credit, debit and full refund.
 - Account lock/unlock and ordering/payment holds.
@@ -73,8 +75,7 @@ It is not:
 
 ### Not implemented as a full product surface
 
-- A complete inline-only navigable dashboard.
-- Pagination for all lists.
+- Durable/restart-safe wizard state across bot restarts or multiple replicas; dashboard text-entry state is bounded process memory with a 10-minute idle expiry.
 - Multi-admin roles or two-person approvals.
 - Provider-order retry/refill/cancel controls.
 - Service override/maintenance management.
@@ -82,7 +83,7 @@ It is not:
 - Formal metrics dashboard or external alert sink.
 - Bulk export.
 
-The current main-menu buttons mostly route the owner to command guidance, while `/user` opens richer inline controls. Documentation must not describe unimplemented menu screens as complete.
+`/start`, `/help` and `/menu` open the navigable button dashboard. It does not remove or replace slash commands; button-started workflows collect dynamic values with bounded prompts and reuse the existing mutation/recovery safeguards.
 
 ---
 
@@ -121,7 +122,8 @@ bot.ts
 ├── global numeric-owner middleware
 ├── generic confirmation callbacks
 ├── command registrars
-│   ├── general/menu/reviews
+│   ├── dashboard/navigation + text-entry wizards
+│   ├── general/stats/reviews
 │   ├── users/sessions/controls
 │   ├── recovery/Support Access
 │   └── wallet/order/deposit operations
@@ -133,7 +135,8 @@ bot.ts
 
 - `bot.ts` owns composition, launch and shutdown only, and keeps compatibility re-exports for the integration suite.
 - `src/config.ts`, `src/db/client.ts` and `src/db/indexes.ts` isolate environment and persistence lifecycle concerns.
-- `src/security/`, `src/domain/` and `src/ui/` contain reusable security, transactional and rendering logic.
+- `src/security/`, `src/domain/` and `src/ui/` contain reusable security, transactional, recovery-action and dashboard/review rendering logic.
+- `src/commands/dashboard.ts` owns inline screen routing and bounded ephemeral text wizards; `src/ui/adminDashboard.ts` owns callback-safe navigation/keyboard helpers.
 - `src/middleware/`, `src/callbacks/` and `src/commands/` register the Telegram interface in the established order.
 - `src/worker/runtime.ts` composes focused payment and recovery-status workers.
 - `src/worker/paymentScanner.ts` owns IMAP parsing and matching; `src/worker/paymentRuntime.ts` owns `/scan`, leasing, reconciliation, health and scheduling.
@@ -218,42 +221,25 @@ Requirements:
 
 ## 6. Interface model
 
-### Current inline menu
+### Inline dashboard and command input
 
-`/start` and `/help` send:
+`/start`, `/help` and `/menu` open the owner-only dashboard. Its sections cover Overview; paginated Users/search and user records; recent and failed Orders; Payments, deposits, memo lookup and reconciliation; Security, account controls and sessions; Reviews; and Worker health/manual scan. User profiles expose the implemented sessions, recovery/Support Access, controls, API-key, wallet and record actions.
 
-- Overview;
-- Users;
-- Orders;
-- Payments;
-- Security;
-- Reviews;
-- Close.
+Dynamic lists use bounded pagination. Data screens provide a parent Back path, Dashboard/Home path and Refresh action. Action forms prompt for arbitrary values (email, amount, reason, receipt IDs or optional custom password) rather than encoding them in callback data. `/cancel` and the wizard's Cancel button discard a form without staging an action. Wizard state is process-local, bounded and expires after 10 minutes of inactivity; it is not durable across restarts or shared between replicas.
 
-These buttons currently send command guidance. Close deletes the menu message. The richer inline surface begins after `/user <email>`:
-
-- Sessions;
-- Support Access;
-- Account Controls;
-- API Keys;
-- Records;
-- Revoke All Sessions.
-
-### Command input
-
-Commands are appropriate where arbitrary values are needed. Reasoned commands use:
+All existing slash commands remain registered and listed in Telegram's command menu. They can still be used directly, with their existing validation and reason syntax:
 
 ```text
 /<command> arguments | reason
 ```
 
-The generic parser requires a reason between 5 and 500 characters. Recovery has its own validation and identity-checklist prompt.
+The generic parser requires a reason between 5 and 500 characters. Recovery has its own validation and identity-checklist prompt. Starting another dashboard navigation action or a non-cancel slash command disarms any stale text wizard so unrelated text cannot be consumed by an earlier prompt.
 
 ### Confirmation UX
 
 ```mermaid
 flowchart LR
-  Cmd[Owner command] --> Validate[Validate input + target]
+  Entry[Owner command or dashboard button] --> Validate[Validate input + target]
   Validate --> Pending[(pending action; token hash; 5m)]
   Pending --> Preview[Confirm / Cancel buttons]
   Preview --> Claim{Actor + state + expiry claim}
@@ -627,8 +613,7 @@ Current source still has legacy direct error/list interpolation paths. Before pr
 
 ```bash
 npm ci
-npx tsc --noEmit
-npm run test:admin-actions
+npm test
 npm audit --omit=dev
 ```
 
@@ -642,12 +627,15 @@ The integration suite covers:
 - exact Direct UPI worker settlement;
 - concurrent settlement winner and rollback on payment hold.
 
+`tests/dashboardUi.ts` checks section entry points, representative workflow callback lengths, 64-byte callback-data and 64-character button-label constraints, navigation, refresh and pagination helper behavior. It is a keyboard-contract test, not a live Telegram/database end-to-end test.
+
 ### Required Railway/Telegram staging
 
 - correct/wrong owner behavior;
 - expected bot identity;
 - stale/replayed/wrong-actor buttons;
-- real message edit behavior;
+- real message edit behavior, Back/Home/Refresh, and pagination across each dashboard section;
+- button-launched email, reason, wallet, refund, recovery, Support Access, API-key and manual-reconciliation wizards, including `/cancel` and stale-flow disarming;
 - recovery and Support Access status synchronization;
 - two replicas with one active lease;
 - leader restart/takeover;
@@ -691,10 +679,9 @@ Each item requires explicit approval and tests.
 
 ### Interface
 
-- Convert guidance-only menu sections into full paginated inline views.
-- Add stable Back/Home/Refresh behavior and persisted wizard navigation.
-- Add bounded search by user ID/username where useful.
-- Standardize every owner-facing value through one HTML renderer.
+- Add durable/restart-safe wizard state only if an explicit multi-replica workflow requirement is approved; current short-lived forms intentionally remain process-local.
+- Add bounded search by immutable user ID or username where useful; current dashboard supports email search.
+- Standardize every owner-facing value through one HTML renderer and finish the legacy list/error-path escaping audit.
 
 ### Administration
 

@@ -1,18 +1,20 @@
-import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { ObjectId } from "mongodb";
 import type { Telegraf } from "telegraf";
 import { temporaryPasswordMaxUses, temporaryPasswordTtlMinutes } from "../config.js";
 import { getDatabase, getMongoClient } from "../db/client.js";
-import { ensureAdminControlIndexes } from "../db/indexes.js";
-import { decryptAdminStateSecret, encryptAdminStateSecret, generateTemporaryPassword, hashActionToken } from "../security/adminState.js";
+import { createPasswordResetAction, issueSupportAccessCode, protectCustomTemporaryPassword } from "../domain/recoveryActions.js";
+import { decryptAdminStateSecret, generateTemporaryPassword, hashActionToken } from "../security/adminState.js";
 import { escapeHtml } from "../security/telegramHtml.js";
 
 export function registerRecoveryCommands(bot: Telegraf<any>) {
   // /resetpassword <email> <auto|custom-password> | <mandatory reason>
   bot.command("resetpassword", async (ctx) => {
     try {
-      const rawInput = ctx.message.text.replace(/^\/resetpassword(?:@\w+)?\s*/i, "").trim();
+      const messageText = String(ctx.message?.text || "");
+      // Delete the command before any validation or lookup so even invalid custom values are not retained in chat.
+      await ctx.deleteMessage().catch(() => {});
+      const rawInput = messageText.replace(/^\/resetpassword(?:@\w+)?\s*/i, "").trim();
       const separator = rawInput.indexOf("|");
       if (separator < 0) {
         return ctx.reply(
@@ -44,26 +46,15 @@ export function registerRecoveryCommands(bot: Telegraf<any>) {
         if (categories < 3) return ctx.reply("❌ Custom temporary password must use at least three character categories.");
       }
 
-      const rawActionToken = crypto.randomBytes(16).toString("hex");
-      const tokenHash = hashActionToken(rawActionToken);
-      const now = new Date();
-      const expiresAt = new Date(now.getTime() + 5 * 60_000);
-      await ensureAdminControlIndexes(database);
-      await database.collection("admin_action_tokens").insertOne({
-        token_hash: tokenHash,
-        action: "password_reset",
-        actor_telegram_id: ctx.from?.id,
-        user_id: user._id,
-        user_email: user.email,
-        username: user.username,
-        mode: generatedMode ? "generated" : "owner_selected",
-        custom_password_hash: generatedMode ? null : await bcrypt.hash(mode, 12),
-        custom_password_encrypted: generatedMode ? null : encryptAdminStateSecret(mode),
+      const protectedPassword = generatedMode ? null : await protectCustomTemporaryPassword(mode);
+      const actorTelegramId = ctx.from?.id;
+      if (!actorTelegramId) throw new Error("Owner identity is unavailable.");
+      const { rawActionToken, expiresAt } = await createPasswordResetAction(database, {
+        user,
+        actorTelegramId,
         reason,
-        created_at: now,
-        expires_at: expiresAt,
-        consumed_at: null,
-        cancelled_at: null,
+        generated: generatedMode,
+        protectedPassword,
       });
 
       await ctx.reply(
@@ -80,10 +71,13 @@ export function registerRecoveryCommands(bot: Telegraf<any>) {
         {
           parse_mode: "HTML",
           reply_markup: {
-            inline_keyboard: [[
-              { text: "✅ Confirm reset", callback_data: `pwdreset-confirm:${rawActionToken}` },
-              { text: "✖ Cancel", callback_data: `pwdreset-cancel:${rawActionToken}` },
-            ]],
+            inline_keyboard: [
+              [
+                { text: "✅ Confirm reset", callback_data: `pwdreset-confirm:${rawActionToken}` },
+                { text: "✖ Cancel", callback_data: `pwdreset-cancel:${rawActionToken}` },
+              ],
+              [{ text: "🏠 Dashboard", callback_data: "d:home" }],
+            ],
           },
         },
       );
@@ -116,7 +110,9 @@ export function registerRecoveryCommands(bot: Telegraf<any>) {
           { _id: action._id, consumed_at: null },
           { $set: { cancelled_at: new Date() }, $unset: { custom_password_encrypted: "", custom_password_hash: "" } },
         );
-        await ctx.editMessageText("✖ Temporary-password reset cancelled.");
+        await ctx.editMessageText("✖ Temporary-password reset cancelled.", {
+          reply_markup: { inline_keyboard: [[{ text: "🏠 Dashboard", callback_data: "d:home" }]] },
+        });
         await ctx.answerCbQuery("Cancelled");
         return;
       }
@@ -247,7 +243,7 @@ export function registerRecoveryCommands(bot: Telegraf<any>) {
           `Status: ⏳ Waiting for user\n` +
           `Reason: ${escapeHtml(action.reason)}\n\n` +
           `<i>Credential ID: ${temporaryId?.toString() || "recorded"}. The permanent password remains unreadable.</i>`,
-          { parse_mode: "HTML" },
+          { parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "🏠 Dashboard", callback_data: "d:home" }]] } },
         );
       } catch (deliveryError) {
         if (temporaryId) {
@@ -292,47 +288,11 @@ export function registerRecoveryCommands(bot: Telegraf<any>) {
       const user: any = await database.collection("users").findOne({ email });
       if (!user) return ctx.reply("❌ No user exists with that email.");
       if (user.account_locked === true) return ctx.reply("❌ Support Access is unavailable while this account is locked.");
-      const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-      const part = () => Array.from({ length: 4 }, () => alphabet[crypto.randomInt(0, alphabet.length)]).join("");
-      const rawCode = `SUP-${part()}-${part()}-${part()}-${part()}`;
-      const now = new Date();
-      const expiresAt = new Date(now.getTime() + 5 * 60_000);
-
-      await Promise.all([
-        database.collection("support_access_codes").createIndex({ code_hash: 1 }, { unique: true }),
-        database.collection("support_access_codes").createIndex(
-          { subject_user_id: 1 },
-          {
-            unique: true,
-            partialFilterExpression: { consumed_at: null, invalidated_at: null },
-            name: "one_active_support_code_per_subject",
-          },
-        ),
-        database.collection("support_access_codes").createIndex({ expires_at: 1 }, { expireAfterSeconds: 60 * 60 * 24 }),
-      ]);
-      await database.collection("support_access_codes").updateMany(
-        { subject_user_id: user._id, consumed_at: null, invalidated_at: null },
-        {
-          $set: {
-            invalidated_at: now,
-            invalidation_reason: "new_code_issued",
-            telegram_status_retry_required: true,
-          },
-        },
-      );
-      const inserted = await database.collection("support_access_codes").insertOne({
-        code_hash: hashActionToken(rawCode),
-        subject_user_id: user._id,
-        subject_username: user.username,
-        subject_email: user.email,
-        reason,
-        created_by_telegram_id: ctx.from?.id,
-        created_at: now,
-        expires_at: expiresAt,
-        consumed_at: null,
-        invalidated_at: null,
-      });
-      insertedId = inserted.insertedId;
+      const actorTelegramId = ctx.from?.id;
+      if (!actorTelegramId) throw new Error("Owner identity is unavailable.");
+      const issued = await issueSupportAccessCode(database, { user, actorTelegramId, reason });
+      const { rawCode, expiresAt } = issued;
+      insertedId = issued.insertedId;
 
       const sent: any = await ctx.reply(
         `👁 <b>Support Access Code Created</b>\n\n` +
@@ -344,10 +304,10 @@ export function registerRecoveryCommands(bot: Telegraf<any>) {
         `Permissions: <b>Read-only</b>\n` +
         `Reason: ${escapeHtml(reason)}\n\n` +
         `<i>Enter this once at https://smmup.co.in/support-access while signed in as owner. The code is stored only as a hash.</i>`,
-        { parse_mode: "HTML" },
+        { parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "🏠 Dashboard", callback_data: "d:home" }]] } },
       );
       await database.collection("support_access_codes").updateOne(
-        { _id: inserted.insertedId },
+        { _id: issued.insertedId },
         {
           $set: {
             telegram_chat_id: sent.chat?.id || ctx.chat?.id,
