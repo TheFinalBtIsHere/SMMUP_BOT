@@ -1,0 +1,27 @@
+{
+  "name": "smmupbot",
+  "version": "1.0.0",
+  "description": "Standalone owner-only Telegram administration and IMAP settlement bot for SMM UP",
+  "main": "bot.ts",
+  "type": "module",
+  "scripts": {
+    "start": "tsx bot.ts",
+    "dev": "tsx watch bot.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run test:admin-actions",
+    "test:admin-actions": "tsx tests/adminActions.integration.ts"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^16.4.7",
+    "imapflow": "^1.0.170",
+    "mongodb": "^6.13.0",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "mongodb-memory-server-core": "^10.4.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
